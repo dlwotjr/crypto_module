@@ -47,7 +47,6 @@ crypto_module/
 │   └── sha3_vs
 │
 ├── Makefile
-├── CLAUDE.md
 └── README.md
 ```
 
