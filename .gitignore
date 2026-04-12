@@ -1,0 +1,9 @@
+# Build artifacts
+build/
+
+# Claude Code
+CLAUDE.md
+.claude/
+
+# Windows metadata files
+*.Identifier
