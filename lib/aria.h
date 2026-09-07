@@ -23,10 +23,13 @@ void Crypt(const Byte* p, int R, const Byte* e, Byte* c);
 void printBlock(Byte* b, int size);
 void printBlockOfLength(Byte* b, int len);
 
+#define ARIA_MODE_SUCCESS 0
+#define ARIA_MODE_ERROR  -1
+
 // Modes of operation
-void ARIA_ECB(int dir, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
-void ARIA_CBC(int dir, const Byte* iv, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
-void ARIA_CTR(int dir, const Byte* iv, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
+int ARIA_ECB(int dir, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
+int ARIA_CBC(int dir, const Byte* iv, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
+int ARIA_CTR(int dir, const Byte* iv, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
 void ARIA_CFB64(int dir, const Byte* iv, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
 void ARIA_OFB(int dir, const Byte* iv, const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c);
 

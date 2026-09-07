@@ -121,9 +121,9 @@ static int run_msg_test(const char *filepath, int bitSize,
             hex2bin(md_expected, p + 5);
 
             int msgBytes = len_bits / 8;
-            int ret = sha3_hash(md_computed, digestLen,
-                                (len_bits > 0 ? msg : NULL), msgBytes,
-                                bitSize, SHA3_SHAKE_NONE);
+            int ret = KCMVP_SHA3_Hash(md_computed, digestLen,
+                                      (len_bits > 0 ? msg : NULL), msgBytes,
+                                      bitSize);
 
             case_num++;
             int ok = (ret == 0) &&
@@ -207,8 +207,7 @@ static int run_monte_test(const char *filepath, int bitSize,
             for (j = 0; j < 100; j++) {
                 /* 1000 inner SHA3 applications */
                 for (i = 0; i < 1000; i++) {
-                    sha3_hash(tmp, digestLen, cur, digestLen,
-                              bitSize, SHA3_SHAKE_NONE);
+                    KCMVP_SHA3_Hash(tmp, digestLen, cur, digestLen, bitSize);
                     memcpy(cur, tmp, digestLen);
                 }
                 memcpy(results[j], cur, digestLen);
@@ -309,11 +308,13 @@ static int run_hmac_test(const char *filepath)
 
             hex2bin(mac_expected, p + 6);
 
-            HMAC_SHA3(msg, (uint32_t)mlen, key, (uint32_t)klen,
-                      mac_computed, bitSize);
+            int ret = KCMVP_HMAC_SHA3(msg, (uint32_t)mlen,
+                                      key, (uint32_t)klen,
+                                      mac_computed, bitSize);
 
             case_num++;
-            int ok = (memcmp(mac_computed, mac_expected, tlen) == 0);
+            int ok = (ret == KCMVP_SUCCESS) &&
+                     (memcmp(mac_computed, mac_expected, tlen) == 0);
             snprintf(label, sizeof(label),
                      "HMAC-SHA3-%d Count=%d (TLen=%d)",
                      bitSize, count, tlen);
@@ -364,6 +365,11 @@ int main(void)
     printf("  SHA-3 Validation System (SHA3VS)\n");
     printf("============================================================\n\n");
 
+    if (KCMVP_Initialize() != KCMVP_SUCCESS) {
+        fprintf(stderr, "KCMVP initialization failed\n");
+        return 1;
+    }
+
     /* ---- SHA-3 Hash Tests ---- */
     printf("[ SHA3-224 ]\n");
     run_variant(224);
@@ -390,6 +396,9 @@ int main(void)
     printf("============================================================\n");
     printf("  TOTAL: %d passed, %d failed\n", total_pass, total_fail);
     printf("============================================================\n");
+
+    if (KCMVP_Shutdown() != KCMVP_SUCCESS)
+        return 1;
 
     return (total_fail == 0) ? 0 : 1;
 }

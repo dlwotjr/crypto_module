@@ -1,264 +1,218 @@
+#include <stddef.h>
+#include <string.h>
 
 #include "aria.h"
-#include <memory.h>
 
+#define ARIA_BLOCK_SIZE 16
+#define ARIA_ROUND_KEY_SIZE (16 * 17)
 
-void
-ARIA_ECB(int dir, const Byte* p,
-	int pSize,
-	const Byte* key,
-	int keyBit,
-	Byte* c)
+static void secure_zero(void *ptr, size_t len)
 {
-	int cnt_i;
-	unsigned char rk[16 * 17] = { 0x00, };
-	int numRounds = 0;
-	int numofBlocks = pSize >> 4;			// number of 16-byte blocks in pSize
-	unsigned char* ptrP = p;
-	unsigned char* ptrC = c;
+    volatile Byte *p = (volatile Byte *)ptr;
 
-	if (dir == ARIA_ENCRYPT) {
-		numRounds = EncKeySetup(key, rk, keyBit);
-	}
-	else if (dir == ARIA_DECRYPT) {
-		numRounds = DecKeySetup(key, rk, keyBit);
-	}
-
-	for (cnt_i = 0; cnt_i < numofBlocks; cnt_i++)
-	{
-		Crypt(ptrP, numRounds, rk, ptrC);
-		ptrP += 16;
-		ptrC += 16;
-	}
+    while (len-- > 0)
+        *p++ = 0;
 }
 
-/*
-* @brief ARIA_CBC mode implementation
-* @param const Byte *iv initial vector
-* @param const Byte *p plaintext
-* @param int pSize length of plaintext
-* @param const Byte* key master key
-* @param int keyBit bit of master key
-* @param Byte* c ciphertext
-* @return void
-*/
-void
-ARIA_CBC(int dir, const Byte* iv,
-	const Byte* p,
-	int pSize,
-	const Byte* key,
-	int keyBit,
-	Byte* c)
+static int valid_key_bits(int key_bits)
 {
-	int cnt_i = 0, cnt_j = 0;
-	int numofBlocks = pSize >> 4;			// number of 16-byte blocks in pSize
-	int numRounds = 0;
-	unsigned char rk[16 * 17] = { 0x00, };
-	unsigned char input[16] = { 0x00, };
-	unsigned char CT[16] = { 0x00, };
-	unsigned char* ptrP = p;
-	unsigned char* ptrC = c;
-
-	if (dir == ARIA_ENCRYPT) {
-		numRounds = EncKeySetup(key, rk, keyBit);
-
-		memcpy(CT, iv, 16);
-
-		for (cnt_i = 0; cnt_i < numofBlocks; cnt_i++)
-		{
-			for (cnt_j = 0; cnt_j < 16; cnt_j++)
-			{
-				input[cnt_j] = (ptrP[cnt_j] ^ CT[cnt_j]);
-			}
-			memset(CT, 0, sizeof(CT));
-			Crypt(input, numRounds, rk, CT);
-			memcpy(ptrC, CT, sizeof(CT));
-
-			ptrP += 16;
-			ptrC += 16;
-		}
-	}
-	else if (dir == ARIA_DECRYPT) {
-		numRounds = DecKeySetup(key, rk, keyBit);
-
-		// Codes...
-	}
+    return key_bits == 128 || key_bits == 192 || key_bits == 256;
 }
 
-void incCtr(unsigned char* ctr)
+static int valid_direction(int direction)
 {
-	int cnt_i = 0;
-	unsigned char carry = 1;		// set initial carry to 1
-	unsigned char temp = 0;
-
-	for (cnt_i = 15; cnt_i >= 0; cnt_i--)
-	{
-		temp = ctr[cnt_i] + carry;
-		if (temp < ctr[cnt_i])
-		{
-			carry = 1;
-		}
-		else
-		{
-			carry = 0;
-		}
-		ctr[cnt_i] = temp;
-	}
+    return direction == ARIA_ENCRYPT || direction == ARIA_DECRYPT;
 }
 
-void ARIA_CTR(int dir, const Byte* iv,
-	const Byte* p,
-	int pSize,
-	const Byte* key,
-	int keyBit,
-	Byte* c)
+int ARIA_ECB(int direction, const Byte *input, int input_size,
+             const Byte *key, int key_bits, Byte *output)
 {
-	int cnt_i = 0, cnt_j = 0;
-	int numofBlocks = pSize >> 4;			// number of 16-byte blocks in pSize
-	int numRounds = 0;
-	unsigned char rk[16 * 17] = { 0x00, };
-	unsigned char ctr[16] = { 0x00, };
-	unsigned char CT[16] = { 0x00, };
-	unsigned char* ptrP = p;
-	unsigned char* ptrC = c;
+    Byte round_keys[ARIA_ROUND_KEY_SIZE];
+    int rounds;
+    int offset;
 
-	memcpy(ctr, iv, 16);		// initialize counter
+    if (!valid_direction(direction) || input == NULL || key == NULL ||
+        output == NULL || input_size <= 0 ||
+        (input_size % ARIA_BLOCK_SIZE) != 0 || !valid_key_bits(key_bits))
+        return ARIA_MODE_ERROR;
 
-	if (dir == ARIA_ENCRYPT) {
-		numRounds = EncKeySetup(key, rk, keyBit);
+    rounds = direction == ARIA_ENCRYPT ?
+        EncKeySetup(key, round_keys, key_bits) :
+        DecKeySetup(key, round_keys, key_bits);
+    if (rounds <= 0) {
+        secure_zero(round_keys, sizeof(round_keys));
+        return ARIA_MODE_ERROR;
+    }
 
-		for (cnt_i = 0; cnt_i < numofBlocks; cnt_i++)
-		{
-			memset(CT, 0, sizeof(CT));
-			Crypt(ctr, numRounds, rk, CT);
+    for (offset = 0; offset < input_size; offset += ARIA_BLOCK_SIZE)
+        Crypt(input + offset, rounds, round_keys, output + offset);
 
-			for (cnt_j = 0; cnt_j < 16; cnt_j++)
-			{
-				CT[cnt_j] ^= ptrP[cnt_j];
-			}
-
-			memcpy(ptrC, CT, sizeof(CT));
-
-			ptrP += 16;
-			ptrC += 16;
-
-			// update counter
-			incCtr(ctr);
-		}
-	}
-	else if (dir == ARIA_DECRYPT) {
-		numRounds = DecKeySetup(key, rk, keyBit);
-
-		// Codes...
-	}
+    secure_zero(round_keys, sizeof(round_keys));
+    return ARIA_MODE_SUCCESS;
 }
 
-void ARIA_CFB64(int dir, const Byte* iv,
-	const Byte* p,
-	int pSize,
-	const Byte* key,
-	int keyBit,
-	Byte* c)
+int ARIA_CBC(int direction, const Byte *iv, const Byte *input, int input_size,
+             const Byte *key, int key_bits, Byte *output)
 {
-	int cnt_i = 0, cnt_j = 0;
-	int numofBlocks = pSize >> 3;			// number of 8-byte blocks in pSize
-	int numRounds = 0;
-	unsigned char rk[16 * 17] = { 0x00, };
-	unsigned char input[16] = { 0x00, };
-	unsigned char CF[16] = { 0x00, };
-	unsigned char CT[8] = { 0x00, };
-	unsigned char* ptrP = p;
-	unsigned char* ptrC = c;
+    Byte round_keys[ARIA_ROUND_KEY_SIZE];
+    Byte chain[ARIA_BLOCK_SIZE];
+    Byte block[ARIA_BLOCK_SIZE];
+    Byte ciphertext[ARIA_BLOCK_SIZE];
+    int rounds;
+    int offset;
+    int i;
 
-	memcpy(input, iv, 16);
+    if (!valid_direction(direction) || iv == NULL || input == NULL ||
+        key == NULL || output == NULL || input_size <= 0 ||
+        (input_size % ARIA_BLOCK_SIZE) != 0 || !valid_key_bits(key_bits))
+        return ARIA_MODE_ERROR;
 
-	if (dir == ARIA_ENCRYPT) {
-		numRounds = EncKeySetup(key, rk, keyBit);
+    rounds = direction == ARIA_ENCRYPT ?
+        EncKeySetup(key, round_keys, key_bits) :
+        DecKeySetup(key, round_keys, key_bits);
+    if (rounds <= 0) {
+        secure_zero(round_keys, sizeof(round_keys));
+        return ARIA_MODE_ERROR;
+    }
 
-		for (cnt_i = 0; cnt_i < numofBlocks; cnt_i++)
-		{
-			memset(CF, 0, sizeof(CF));
-			memset(CT, 0, sizeof(CT));
+    memcpy(chain, iv, sizeof(chain));
+    for (offset = 0; offset < input_size; offset += ARIA_BLOCK_SIZE) {
+        if (direction == ARIA_ENCRYPT) {
+            for (i = 0; i < ARIA_BLOCK_SIZE; i++)
+                block[i] = input[offset + i] ^ chain[i];
+            Crypt(block, rounds, round_keys, output + offset);
+            memcpy(chain, output + offset, sizeof(chain));
+        } else {
+            memcpy(ciphertext, input + offset, sizeof(ciphertext));
+            Crypt(ciphertext, rounds, round_keys, block);
+            for (i = 0; i < ARIA_BLOCK_SIZE; i++)
+                output[offset + i] = block[i] ^ chain[i];
+            memcpy(chain, ciphertext, sizeof(chain));
+        }
+    }
 
-			Crypt(input, numRounds, rk, CF);
-
-			for (cnt_j = 0; cnt_j < 8; cnt_j++)
-			{
-				CT[cnt_j] = (ptrP[cnt_j] ^ CF[cnt_j]);
-			}
-
-			memcpy(ptrC, CT, sizeof(CT));
-
-			ptrP += 8;
-			ptrC += 8;
-
-			// CF update
-			for (cnt_j = 0; cnt_j < 8; cnt_j++)
-			{
-				input[cnt_j] = input[cnt_j + 8];
-			}
-			for (cnt_j = 8; cnt_j < 16; cnt_j++)
-			{
-				input[cnt_j] = CT[cnt_j - 8];
-			}
-		}
-
-	}
-	else if (dir == ARIA_DECRYPT) {
-		numRounds = DecKeySetup(key, rk, keyBit);
-
-		// Codes...
-	}
+    secure_zero(round_keys, sizeof(round_keys));
+    secure_zero(chain, sizeof(chain));
+    secure_zero(block, sizeof(block));
+    secure_zero(ciphertext, sizeof(ciphertext));
+    return ARIA_MODE_SUCCESS;
 }
 
-void ARIA_OFB(int dir, const Byte* iv,
-	const Byte* p,
-	int pSize,
-	const Byte* key,
-	int keyBit,
-	Byte* c)
+static void increment_counter(Byte counter[ARIA_BLOCK_SIZE])
 {
-	int cnt_i = 0, cnt_j = 0;
-	int numofBlocks = pSize >> 4;			// number of 16-byte blocks in pSize
-	int numRounds = 0;
-	unsigned char rk[16 * 17] = { 0x00, };
-	unsigned char input[16] = { 0x00, };
-	unsigned char OF[16] = { 0x00, };
-	unsigned char CT[16] = { 0x00, };
-	unsigned char* ptrP = p;
-	unsigned char* ptrC = c;
+    int i;
 
-	memcpy(input, iv, 16);
-
-	if (dir == ARIA_ENCRYPT) {
-		numRounds = EncKeySetup(key, rk, keyBit);
-
-		for (cnt_i = 0; cnt_i < numofBlocks; cnt_i++)
-		{
-			memset(OF, 0, sizeof(OF));
-			memset(CT, 0, sizeof(CT));
-
-			Crypt(input, numRounds, rk, OF);
-
-			for (cnt_j = 0; cnt_j < 16; cnt_j++)
-			{
-				CT[cnt_j] = (ptrP[cnt_j] ^ OF[cnt_j]);
-			}
-
-			memcpy(ptrC, CT, sizeof(CT));
-
-			ptrP += 16;
-			ptrC += 16;
-
-			memcpy(input, OF, sizeof(OF));
-		}
-
-	}
-	else if (dir == ARIA_DECRYPT) {
-		numRounds = DecKeySetup(key, rk, keyBit);
-
-		// Codes...
-	}
+    for (i = ARIA_BLOCK_SIZE - 1; i >= 0; i--) {
+        counter[i]++;
+        if (counter[i] != 0)
+            break;
+    }
 }
 
-// EOF
+int ARIA_CTR(int direction, const Byte *iv, const Byte *input, int input_size,
+             const Byte *key, int key_bits, Byte *output)
+{
+    Byte round_keys[ARIA_ROUND_KEY_SIZE];
+    Byte counter[ARIA_BLOCK_SIZE];
+    Byte stream[ARIA_BLOCK_SIZE];
+    int rounds;
+    int offset;
+
+    if (!valid_direction(direction) || iv == NULL || input == NULL ||
+        key == NULL || output == NULL || input_size <= 0 ||
+        !valid_key_bits(key_bits))
+        return ARIA_MODE_ERROR;
+
+    /* CTR encryption and decryption both use the block-cipher encryption key. */
+    rounds = EncKeySetup(key, round_keys, key_bits);
+    if (rounds <= 0) {
+        secure_zero(round_keys, sizeof(round_keys));
+        return ARIA_MODE_ERROR;
+    }
+
+    memcpy(counter, iv, sizeof(counter));
+    for (offset = 0; offset < input_size; offset += ARIA_BLOCK_SIZE) {
+        int remaining = input_size - offset;
+        int block_size = remaining < ARIA_BLOCK_SIZE ? remaining : ARIA_BLOCK_SIZE;
+        int i;
+
+        Crypt(counter, rounds, round_keys, stream);
+        for (i = 0; i < block_size; i++)
+            output[offset + i] = input[offset + i] ^ stream[i];
+        increment_counter(counter);
+    }
+
+    secure_zero(round_keys, sizeof(round_keys));
+    secure_zero(counter, sizeof(counter));
+    secure_zero(stream, sizeof(stream));
+    return ARIA_MODE_SUCCESS;
+}
+
+/* Legacy non-public modes retained from the course code. */
+void ARIA_CFB64(int direction, const Byte *iv, const Byte *input,
+                int input_size, const Byte *key, int key_bits, Byte *output)
+{
+    Byte round_keys[ARIA_ROUND_KEY_SIZE];
+    Byte feedback[ARIA_BLOCK_SIZE];
+    Byte stream[ARIA_BLOCK_SIZE];
+    Byte ciphertext[8];
+    int rounds;
+    int offset;
+    int i;
+
+    if (direction != ARIA_ENCRYPT || iv == NULL || input == NULL ||
+        key == NULL || output == NULL || input_size <= 0 ||
+        (input_size % 8) != 0 || !valid_key_bits(key_bits))
+        return;
+
+    rounds = EncKeySetup(key, round_keys, key_bits);
+    if (rounds <= 0)
+        return;
+
+    memcpy(feedback, iv, sizeof(feedback));
+    for (offset = 0; offset < input_size; offset += 8) {
+        Crypt(feedback, rounds, round_keys, stream);
+        for (i = 0; i < 8; i++)
+            ciphertext[i] = input[offset + i] ^ stream[i];
+        memcpy(output + offset, ciphertext, sizeof(ciphertext));
+        memmove(feedback, feedback + 8, 8);
+        memcpy(feedback + 8, ciphertext, sizeof(ciphertext));
+    }
+
+    secure_zero(round_keys, sizeof(round_keys));
+    secure_zero(feedback, sizeof(feedback));
+    secure_zero(stream, sizeof(stream));
+    secure_zero(ciphertext, sizeof(ciphertext));
+}
+
+void ARIA_OFB(int direction, const Byte *iv, const Byte *input,
+              int input_size, const Byte *key, int key_bits, Byte *output)
+{
+    Byte round_keys[ARIA_ROUND_KEY_SIZE];
+    Byte feedback[ARIA_BLOCK_SIZE];
+    Byte stream[ARIA_BLOCK_SIZE];
+    int rounds;
+    int offset;
+    int i;
+
+    if (direction != ARIA_ENCRYPT || iv == NULL || input == NULL ||
+        key == NULL || output == NULL || input_size <= 0 ||
+        (input_size % ARIA_BLOCK_SIZE) != 0 || !valid_key_bits(key_bits))
+        return;
+
+    rounds = EncKeySetup(key, round_keys, key_bits);
+    if (rounds <= 0)
+        return;
+
+    memcpy(feedback, iv, sizeof(feedback));
+    for (offset = 0; offset < input_size; offset += ARIA_BLOCK_SIZE) {
+        Crypt(feedback, rounds, round_keys, stream);
+        for (i = 0; i < ARIA_BLOCK_SIZE; i++)
+            output[offset + i] = input[offset + i] ^ stream[i];
+        memcpy(feedback, stream, sizeof(feedback));
+    }
+
+    secure_zero(round_keys, sizeof(round_keys));
+    secure_zero(feedback, sizeof(feedback));
+    secure_zero(stream, sizeof(stream));
+}

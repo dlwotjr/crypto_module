@@ -1,23 +1,14 @@
 #include "sha3.h"
-#include <stdio.h>
-#include <stdlib.h>
-
-#define EXPORT __attribute__((visibility("default")))
+#include <string.h>
 
 #define KECCAK_SPONGE_BIT   1600
 #define KECCAK_ROUND        24
-#define KECCAK_STATE_SIZE   200
+#define KECCAK_STATE_SIZE   SHA3_STATE_SIZE
 
 #define KECCAK_SHA3_SUFFIX  0x06
 #define KECCAK_SHAKE_SUFFIX 0x1F
 
 typedef enum { SHA3_OK = 0, SHA3_PARAMETER_ERROR = 1 } SHA3_RETURN;
-
-static unsigned int keccakRate     = 0;
-static unsigned int keccakCapacity = 0;
-static unsigned int keccakSuffix   = 0;
-static uint8_t keccak_state[KECCAK_STATE_SIZE] = { 0x00 };
-static int end_offset = 0;
 
 static const uint32_t keccakf_rndc[KECCAK_ROUND][2] =
 {
@@ -144,119 +135,151 @@ static void keccakf(uint8_t *state)
 }
 
 
-static int keccak_absorb(uint8_t *input, int inLen, int rate, int capacity)
+static int keccak_absorb(SHA3_CTX *ctx, const uint8_t *input, int inLen)
 {
-    uint8_t *buf = input;
+    const uint8_t *buf = input;
     int iLen = inLen;
-    int rateInBytes = rate / 8;
+    int rateInBytes = (int)ctx->rate / 8;
     int blockSize = 0;
     int i;
 
-    if ((rate + capacity) != KECCAK_SPONGE_BIT) return SHA3_PARAMETER_ERROR;
-    if (((rate % 8) != 0) || (rate < 1))         return SHA3_PARAMETER_ERROR;
+    if ((ctx->rate + ctx->capacity) != KECCAK_SPONGE_BIT)
+        return SHA3_PARAMETER_ERROR;
+    if (((ctx->rate % 8) != 0) || (ctx->rate < 1))
+        return SHA3_PARAMETER_ERROR;
 
     while (iLen > 0) {
-        if ((end_offset != 0) && (end_offset < rateInBytes)) {
-            blockSize = (((iLen + end_offset) < rateInBytes) ?
-                         (iLen + end_offset) : rateInBytes);
-            for (i = end_offset; i < blockSize; i++)
-                keccak_state[i] ^= buf[i - end_offset];
-            buf  += blockSize - end_offset;
-            iLen -= blockSize - end_offset;
+        if ((ctx->end_offset != 0) && (ctx->end_offset < rateInBytes)) {
+            blockSize = (((iLen + ctx->end_offset) < rateInBytes) ?
+                         (iLen + ctx->end_offset) : rateInBytes);
+            for (i = ctx->end_offset; i < blockSize; i++)
+                ctx->state[i] ^= buf[i - ctx->end_offset];
+            buf  += blockSize - ctx->end_offset;
+            iLen -= blockSize - ctx->end_offset;
         } else {
             blockSize = (iLen < rateInBytes) ? iLen : rateInBytes;
             for (i = 0; i < blockSize; i++)
-                keccak_state[i] ^= buf[i];
+                ctx->state[i] ^= buf[i];
             buf  += blockSize;
             iLen -= blockSize;
         }
 
         if (blockSize == rateInBytes) {
-            keccakf(keccak_state);
+            keccakf(ctx->state);
             blockSize = 0;
         }
-        end_offset = blockSize;
+        ctx->end_offset = blockSize;
     }
 
     return SHA3_OK;
 }
 
 
-static int keccak_squeeze(uint8_t *output, int outLen, int rate, int suffix)
+static int keccak_squeeze(SHA3_CTX *ctx, uint8_t *output, int outLen)
 {
     uint8_t *buf = output;
     int oLen = outLen;
-    int rateInBytes = rate / 8;
-    int blockSize = end_offset;
+    int rateInBytes = (int)ctx->rate / 8;
+    int blockSize = ctx->end_offset;
     int i;
 
-    keccak_state[blockSize] ^= suffix;
+    ctx->state[blockSize] ^= ctx->suffix;
 
-    if (((suffix & 0x80) != 0) && (blockSize == (rateInBytes - 1)))
-        keccakf(keccak_state);
+    if (((ctx->suffix & 0x80) != 0) && (blockSize == (rateInBytes - 1)))
+        keccakf(ctx->state);
 
-    keccak_state[rateInBytes - 1] ^= 0x80;
-    keccakf(keccak_state);
+    ctx->state[rateInBytes - 1] ^= 0x80;
+    keccakf(ctx->state);
 
     while (oLen > 0) {
         blockSize = (oLen < rateInBytes) ? oLen : rateInBytes;
         for (i = 0; i < blockSize; i++)
-            buf[i] = keccak_state[i];
+            buf[i] = ctx->state[i];
         buf  += blockSize;
         oLen -= blockSize;
         if (oLen > 0)
-            keccakf(keccak_state);
+            keccakf(ctx->state);
     }
 
     return SHA3_OK;
 }
 
 
-void sha3_init(int bitSize, int useSHAKE)
+static void secure_zero(void *ptr, size_t len)
 {
-    keccakCapacity = (unsigned int)(bitSize * 2);
-    keccakRate     = KECCAK_SPONGE_BIT - keccakCapacity;
-    keccakSuffix   = useSHAKE ? KECCAK_SHAKE_SUFFIX : KECCAK_SHA3_SUFFIX;
-    memset(keccak_state, 0x00, KECCAK_STATE_SIZE);
-    end_offset = 0;
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+
+    while (len-- > 0)
+        *p++ = 0;
 }
 
-
-int sha3_update(uint8_t *input, int inLen)
+int sha3_init(SHA3_CTX *ctx, int bitSize, int useSHAKE)
 {
-    return keccak_absorb(input, inLen, (int)keccakRate, (int)keccakCapacity);
-}
-
-
-int sha3_final(uint8_t *output, int outLen)
-{
-    int ret = keccak_squeeze(output, outLen, (int)keccakRate, (int)keccakSuffix);
-    keccakRate     = 0;
-    keccakCapacity = 0;
-    keccakSuffix   = 0;
-    memset(keccak_state, 0x00, KECCAK_STATE_SIZE);
-    end_offset = 0;
-    return ret;
-}
-
-
-EXPORT int sha3_hash(uint8_t *output, int outLen,
-                     uint8_t *input,  int inLen,
-                     int bitSize, int useSHAKE)
-{
+    if (ctx == NULL)
+        return SHA3_PARAMETER_ERROR;
+    secure_zero(ctx, sizeof(*ctx));
+    if (useSHAKE != SHA3_SHAKE_NONE && useSHAKE != SHA3_SHAKE_USE)
+        return SHA3_PARAMETER_ERROR;
     if (useSHAKE == SHA3_SHAKE_USE) {
-        if ((bitSize != KECCAK_SHAKE128) && (bitSize != KECCAK_SHAKE256))
+        if (bitSize != KECCAK_SHAKE128 && bitSize != KECCAK_SHAKE256)
             return SHA3_PARAMETER_ERROR;
-        sha3_init(bitSize, SHA3_SHAKE_USE);
-    } else {
-        if ((bitSize != KECCAK_SHA3_224) && (bitSize != KECCAK_SHA3_256) &&
-            (bitSize != KECCAK_SHA3_384) && (bitSize != KECCAK_SHA3_512))
-            return SHA3_PARAMETER_ERROR;
-        if ((bitSize / 8) != outLen)
-            return SHA3_PARAMETER_ERROR;
-        sha3_init(bitSize, SHA3_SHAKE_NONE);
+    } else if (bitSize != KECCAK_SHA3_224 &&
+               bitSize != KECCAK_SHA3_256 &&
+               bitSize != KECCAK_SHA3_384 &&
+               bitSize != KECCAK_SHA3_512) {
+        return SHA3_PARAMETER_ERROR;
     }
 
-    sha3_update(input, inLen);
-    return sha3_final(output, outLen);
+    ctx->capacity = (unsigned int)(bitSize * 2);
+    ctx->rate = KECCAK_SPONGE_BIT - ctx->capacity;
+    ctx->suffix = useSHAKE == SHA3_SHAKE_USE ?
+        KECCAK_SHAKE_SUFFIX : KECCAK_SHA3_SUFFIX;
+    ctx->initialized = 1;
+    ctx->use_shake = useSHAKE;
+    ctx->bit_size = bitSize;
+    return SHA3_OK;
+}
+
+int sha3_update(SHA3_CTX *ctx, const uint8_t *input, int inLen)
+{
+    if (ctx == NULL || !ctx->initialized || inLen < 0 ||
+        (inLen > 0 && input == NULL))
+        return SHA3_PARAMETER_ERROR;
+    if (inLen == 0)
+        return SHA3_OK;
+    return keccak_absorb(ctx, input, inLen);
+}
+
+int sha3_final(SHA3_CTX *ctx, uint8_t *output, int outLen)
+{
+    int result;
+
+    if (ctx == NULL || !ctx->initialized || output == NULL || outLen <= 0)
+        return SHA3_PARAMETER_ERROR;
+    if (ctx->use_shake == SHA3_SHAKE_NONE && outLen != ctx->bit_size / 8)
+        return SHA3_PARAMETER_ERROR;
+
+    result = keccak_squeeze(ctx, output, outLen);
+    secure_zero(ctx, sizeof(*ctx));
+    return result;
+}
+
+int sha3_hash(uint8_t *output, int outLen,
+              const uint8_t *input, int inLen,
+              int bitSize, int useSHAKE)
+{
+    SHA3_CTX ctx;
+    int result;
+
+    if (output == NULL || outLen <= 0 || inLen < 0 ||
+        (inLen > 0 && input == NULL))
+        return SHA3_PARAMETER_ERROR;
+    result = sha3_init(&ctx, bitSize, useSHAKE);
+    if (result == SHA3_OK)
+        result = sha3_update(&ctx, input, inLen);
+    if (result == SHA3_OK)
+        result = sha3_final(&ctx, output, outLen);
+    else
+        secure_zero(&ctx, sizeof(ctx));
+    return result;
 }

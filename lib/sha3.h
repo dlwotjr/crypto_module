@@ -20,15 +20,28 @@ extern "C" {
 #define SHA3_SHAKE_NONE   0
 #define SHA3_SHAKE_USE    1
 
+#define SHA3_STATE_SIZE   200
+
+typedef struct {
+    uint8_t state[SHA3_STATE_SIZE];
+    unsigned int rate;
+    unsigned int capacity;
+    unsigned int suffix;
+    int end_offset;
+    int initialized;
+    int use_shake;
+    int bit_size;
+} SHA3_CTX;
+
 /* Streaming interface */
-void sha3_init(int bitSize, int useSHAKE);
-int  sha3_update(uint8_t *input, int inLen);
-int  sha3_final(uint8_t *output, int outLen);
+int sha3_init(SHA3_CTX *ctx, int bitSize, int useSHAKE);
+int sha3_update(SHA3_CTX *ctx, const uint8_t *input, int inLen);
+int sha3_final(SHA3_CTX *ctx, uint8_t *output, int outLen);
 
 /* One-shot interface */
-int  sha3_hash(uint8_t *output, int outLen,
-               uint8_t *input, int inLen,
-               int bitSize, int useSHAKE);
+int sha3_hash(uint8_t *output, int outLen,
+              const uint8_t *input, int inLen,
+              int bitSize, int useSHAKE);
 
 #ifdef __cplusplus
 }

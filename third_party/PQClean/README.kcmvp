@@ -1,0 +1,15 @@
+# Vendored PQClean ML-KEM-768
+
+Source: https://github.com/PQClean/PQClean
+
+Commit: `202a8f96315f9ed219387a50f7e40d04af037ea8`
+
+Vendored on: 2026-06-10
+
+Only the portable `crypto_kem/ml-kem-768/clean` implementation and its required
+`common` headers/Keccak implementation are included. The implementation license
+is CC0/public domain; see `crypto_kem/ml-kem-768/clean/LICENSE`.
+
+The local integration changes `kem.c` only to propagate failure from
+`randombytes()` and to clear its temporary randomness. Randomness is provided by
+the module's approved Hash_DRBG through `lib/mlkem_randombytes.c`.

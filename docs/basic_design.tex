@@ -1,0 +1,254 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{kotex}
+\usepackage[margin=24mm]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\setlist{nosep}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\renewcommand{\arraystretch}{1.25}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{gray!8},
+  frame=single,
+  breaklines=true,
+  columns=fullflexible
+}
+
+\title{SW 암호모듈 기본설계서}
+\author{교과 프로젝트}
+\date{2026년 6월}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{문서 목적과 적용 범위}
+
+본 문서는 기존 교과 코드인 ARIA, SHA3, HMAC-SHA3를 기반으로 구성한
+소프트웨어 암호모듈의 기본설계를 설명한다. 모듈은 대칭키 암호, 해시,
+메시지 인증, 난수 생성, 전통 공개키 키 합의, 양자내성 키 캡슐화 및
+모듈 상태 통제를 하나의 공유 라이브러리 경계 안에 통합한다.
+
+본 결과물은 수업의 최종 프로젝트를 위한 교육용 소프트웨어이다. KCMVP,
+FIPS 140 또는 기타 공인 검증 절차에 제출되거나 공식 인증을 획득한
+암호모듈이 아니다. 따라서 본 문서에서 ``지원'', ``시험 통과''라는 표현은
+현재 저장소의 구현과 자체 시험 결과를 의미하며 공식 적합성 판정을
+의미하지 않는다.
+
+\section{설계 목표}
+
+기본 설계 목표는 다음과 같다.
+
+\begin{enumerate}
+  \item 기존 교과 암호 코드를 재사용하고 공개 서비스 경계를 통일한다.
+  \item 초기화 이전이나 오류 상태에서 암호 서비스가 실행되지 않도록 한다.
+  \item 초기화 과정에서 무결성, 엔트로피 건전성 및 알고리즘 알려진 답 시험
+        (KAT)을 수행한다.
+  \item 난수에 의존하는 키 생성은 모듈 내부 Hash\_DRBG를 사용한다.
+  \item P-256과 ML-KEM 키 생성 후 조건부 자가시험을 수행한다.
+  \item 비밀 상태를 영점화하고 종료 후 서비스를 차단한다.
+  \item 공유 라이브러리에서는 승인된 \texttt{KCMVP\_*} 심볼만 외부에 노출한다.
+\end{enumerate}
+
+\section{요구사항 충족 현황}
+
+\begin{longtable}{p{0.22\textwidth}p{0.58\textwidth}p{0.12\textwidth}}
+\toprule
+요구사항 & 현재 구현 & 상태 \\
+\midrule
+\endhead
+대칭키 암호 & ARIA-128/192/256, ECB/CBC/CTR 암호화 및 복호화 & 구현 \\
+해시 & SHA3-224/256/384/512 & 구현 \\
+MAC & HMAC-SHA3-224/256/384/512 & 구현 \\
+RNG/DRBG & SHA3-256 기반 Hash\_DRBG, 생성/재시드/해제 & 구현 \\
+엔트로피 & Linux \texttt{getrandom()} 전용 입력원 & 구현 \\
+엔트로피 시험 & 시작 시 RCT와 APT 수행 & 구현 \\
+ECC 키 합의 & P-256(secp256r1) ECDH, micro-ecc 사용 & 구현 \\
+양자내성 KEM & PQClean clean 구현 기반 ML-KEM-768 & 구현 \\
+시작 자가시험 & ARIA, SHA3, HMAC, DRBG, P-256, ML-KEM KAT & 구현 \\
+무결성 시험 & 선택 소스 파일의 SHA3-256 생성 매니페스트 비교 & 구현 \\
+조건부 시험 & P-256 및 ML-KEM 키 쌍 일관성 시험 & 구현 \\
+상태 통제 & 비공개 FSM과 서비스 공통 인가 검사 & 구현 \\
+영점화/종료 & DRBG 및 자가시험 상태 제거, 서비스 차단 & 구현 \\
+공개 경계 & 공유 라이브러리와 버전 스크립트 기반 심볼 제한 & 구현 \\
+\bottomrule
+\end{longtable}
+
+\section{전체 아키텍처}
+
+시스템은 응용 프로그램, 공개 모듈 경계, 통제 기능, 암호 서비스 및 외부 참조
+구현의 다섯 계층으로 구분한다.
+
+\begin{lstlisting}
+Application / Test Programs
+  app/main.c, test/module_state_test.c, test/sha3_vs.c
+                         |
+                         v
+Public API Boundary: include/kcmvp.h, lib/KCMVP_Crypto.c
+  lifecycle | ARIA | SHA3/HMAC | RNG | ECDH | ML-KEM
+                         |
+          +--------------+---------------+
+          | Control and assurance        |
+          | FSM, self-test, integrity,    |
+          | entropy health, zeroization   |
+          +--------------+---------------+
+                         |
+          +--------------+---------------+
+          | Cryptographic services       |
+          | ARIA, SHA3, HMAC, Hash_DRBG,  |
+          | P-256 adapter, ML-KEM adapter |
+          +--------------+---------------+
+                         |
+          micro-ecc / PQClean reference implementations
+\end{lstlisting}
+
+응용 프로그램은 \texttt{include/kcmvp.h}만 포함하고
+\texttt{build/libkcmvp\_crypto.so}에 연결한다. 원시 알고리즘 함수, 엔트로피
+함수, DRBG 내부 함수와 외부 참조 프로젝트 심볼은 공개 서비스가 아니다.
+
+\section{상태 기계 개요}
+
+모듈 상태는 \texttt{module\_state.c}의 비공개 정적 변수로 유지된다. 외부
+호출자는 상태를 조회할 수 있지만 직접 변경할 수 없다.
+
+\begin{lstlisting}
+LOAD
+  -> PRE_SELFTEST
+       -> NORMAL             모든 시작 시험 성공
+       -> CRITICAL_ERROR     시작 시험 실패
+
+NORMAL
+  -> EXECUTION -> NORMAL     일반 암호 서비스
+  -> COND_SELFTEST -> NORMAL 조건부 자가시험 성공
+  -> CRITICAL_ERROR          치명 오류 또는 zeroize
+  -> EXIT                    정상 shutdown
+
+EXECUTION / COND_SELFTEST
+  -> CRITICAL_ERROR          서비스 또는 조건부 시험의 치명 실패
+
+CRITICAL_ERROR
+  -> EXIT                    shutdown만 허용
+\end{lstlisting}
+
+\texttt{DEGRADED}와 \texttt{NORMAL\_ERROR}는 공개 열거형에 예약되어 있으나
+현재 구현 경로에서는 사용하지 않는다. 초기화 전 서비스는
+\texttt{KCMVP\_ERROR\_NOT\_INITIALIZED}, 정상 상태가 아닌 경우에는 주로
+\texttt{KCMVP\_ERROR\_INVALID\_STATE}를 반환한다.
+
+\section{지원 알고리즘과 서비스}
+
+\subsection{ARIA}
+
+ARIA는 128, 192, 256비트 키를 지원한다. 공개 모드는 ECB, CBC, CTR이다.
+ECB와 CBC 입력 길이는 16바이트의 양의 배수여야 하며 패딩은 호출자의
+책임이다. CTR은 마지막 부분 블록을 포함한 임의의 양의 바이트 길이를
+처리한다. CBC 및 CTR을 포함하여 암호화와 복호화를 모두 제공한다.
+
+\subsection{SHA3와 HMAC-SHA3}
+
+SHA3-224/256/384/512 단일 호출 해시와 동일 출력 크기의 HMAC-SHA3를
+제공한다. SHA3 내부 스트리밍 상태는 명시적 문맥 구조체에 저장되므로 서로
+독립적인 해시 계산이 전역 Keccak 상태를 공유하지 않는다.
+
+\subsection{Hash\_DRBG}
+
+SHA3-256을 사용하는 프로젝트용 Hash\_DRBG이다. 내부 상태는 440비트의
+\texttt{V}, \texttt{C}, 재시드 카운터 및 인스턴스 상태로 구성된다. 한 번의
+생성 요청은 최대 65,536바이트이며 재시드 간격은 $2^{48}$ 요청이다.
+초기화와 재시드 엔트로피는 \texttt{entropy\_get()}을 통해 얻는다.
+
+\subsection{P-256 ECDH}
+
+BSD 2-Clause 라이선스의 micro-ecc 참조 코드를 사용한다. 개인키는 모듈
+Hash\_DRBG로 생성한다. 공개키 형식은 SEC1 접두 바이트가 없는 64바이트
+$X \parallel Y$이고, 공유 비밀은 32바이트 x 좌표이다. 상대 공개키는 곡선
+유효성 검사를 거친다.
+
+\subsection{ML-KEM-768}
+
+PQClean의 portable clean ML-KEM-768 구현을 사용한다. 공개키는 1,184바이트,
+비밀키는 2,400바이트, 암호문은 1,088바이트, 공유 비밀은 32바이트이다.
+키 생성과 캡슐화 난수는 모듈 Hash\_DRBG로 연결된다. PQClean 소스는
+CC0/public domain 조건이며 저장소에 고정된 커밋 정보가 기록되어 있다.
+
+\section{초기화 및 시험 전략}
+
+\texttt{KCMVP\_Initialize()}의 논리적 순서는 다음과 같다.
+
+\begin{enumerate}
+  \item \texttt{LOAD}에서 \texttt{PRE\_SELFTEST}로 전이한다.
+  \item 생성된 SHA3-256 매니페스트로 선택 모듈 파일의 무결성을 확인한다.
+  \item Linux \texttt{getrandom()}으로 512바이트를 수집한다.
+  \item Repetition Count Test(RCT)와 Adaptive Proportion Test(APT)를 수행한다.
+  \item ARIA-128 암호화/복호화 KAT를 수행한다.
+  \item SHA3-256 및 HMAC-SHA3 KAT를 수행한다.
+  \item 결정론적 Hash\_DRBG KAT를 수행한다.
+  \item 결정론적 P-256 공개키/ECDH KAT를 수행한다.
+  \item 결정론적 ML-KEM-768 키 생성/캡슐화 KAT를 수행한다.
+  \item 새 엔트로피로 운영용 Hash\_DRBG를 인스턴스화한다.
+  \item 모든 단계 성공 시 \texttt{NORMAL}로 전이한다.
+\end{enumerate}
+
+각 알고리즘 통과 플래그는 해당 KAT 성공 후에만 설정한다. 어느 단계든
+실패하면 시험 및 DRBG 상태를 제거하고 \texttt{CRITICAL\_ERROR}로 전이하여
+암호 서비스를 차단한다.
+
+운영 중 P-256과 ML-KEM 키 쌍 생성은 결과를 반환하기 전에 조건부 자가시험을
+수행한다. P-256은 상호 ECDH 비밀을 비교하고, ML-KEM은 결정론적 캡슐화 후
+복호화한 공유 비밀을 비교한다. 실패 시 생성 키를 영점화하고 모듈을
+\texttt{CRITICAL\_ERROR}로 전이한다.
+
+\section{실행 및 검증 방법}
+
+Linux, GCC, GNU Make, binutils가 필요하다. 무결성 매니페스트와 벡터 경로가
+프로젝트 루트 기준이므로 명령은 저장소 루트에서 실행한다.
+
+\begin{lstlisting}[language=bash]
+make clean
+make
+
+# 번호 메뉴 또는 전체 공개 서비스 시연
+./build/main
+./build/main --all
+
+# 전체 시험과 공개 심볼 감사
+make test
+make audit-exports
+
+# clean build + tests + export audit
+make clean && make audit
+\end{lstlisting}
+
+주요 시험은 상태 및 장애 주입 시험, 3,342개 ARIA 벡터, 1,266개
+SHA3/HMAC-SHA3 벡터, P-256 상호 합의, ML-KEM 캡슐화/복호화, 무결성 실패,
+엔트로피 실패, KAT 실패 및 조건부 시험 실패를 포함한다.
+
+\section{제약 및 한계}
+
+\begin{itemize}
+  \item 본 모듈은 공식 KCMVP/FIPS 검증 모듈이 아니다.
+  \item ECB/CBC는 패딩을 제공하지 않는다. CFB64/OFB는 공개 서비스가 아니다.
+  \item 무결성 시험은 선택한 소스 파일의 해시를 비교하며 서명된 코드 로딩이나
+        메모리에 적재된 실행 페이지의 검증을 제공하지 않는다.
+  \item 무결성 경로는 프로젝트 루트에서 실행하는 현재 빌드 구조에 의존한다.
+  \item 엔트로피 시험 임계값은 프로젝트 설정이며 실제 엔트로피 원천의
+        최소 엔트로피 평가에 의해 정당화된 인증 파라미터가 아니다.
+  \item Hash\_DRBG 구현은 교육용 프로젝트 코드이며 독립 표준 검증을 받지 않았다.
+  \item ECDH 출력은 원시 공유 비밀이다. 응용 키로 사용하려면 적절한 KDF가 필요하다.
+  \item 호출자에게 반환된 개인키와 공유 비밀의 수명 및 영점화는 호출자 책임이다.
+  \item PQClean은 고정 커밋을 사용하며 해당 상위 프로젝트의 유지보수 상태 변화에
+        주의해야 한다.
+\end{itemize}
+
+\end{document}

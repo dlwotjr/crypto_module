@@ -75,7 +75,7 @@ int kat_run_file(const char *filepath, int mode, int keyBits)
     char hex_ct[512]  = {0};
 
     Byte key[32], iv[16], pt[KAT_MAX_BLOCK], ct_expected[KAT_MAX_BLOCK];
-    Byte ct_computed[KAT_MAX_BLOCK];
+    Byte ct_computed[KAT_MAX_BLOCK], pt_computed[KAT_MAX_BLOCK];
 
     int total = 0, passed = 0, failed = 0;
     int has_key = 0, has_iv = 0, has_pt = 0, has_ct = 0;
@@ -92,10 +92,18 @@ int kat_run_file(const char *filepath, int mode, int keyBits)
             hex_to_bytes(hex_key, key, 32); \
             if (has_iv) hex_to_bytes(hex_iv, iv, 16); \
             memset(ct_computed, 0, sizeof(ct_computed)); \
-            KCMVP_ARIA_Crypt(ARIA_ENCRYPT, mode, has_iv ? iv : NULL, \
-                             pt, pt_len, key, keyBits, ct_computed); \
+            memset(pt_computed, 0, sizeof(pt_computed)); \
+            int encrypt_result = KCMVP_ARIA_Crypt( \
+                ARIA_ENCRYPT, mode, has_iv ? iv : NULL, \
+                pt, pt_len, key, keyBits, ct_computed); \
+            int decrypt_result = KCMVP_ARIA_Crypt( \
+                ARIA_DECRYPT, mode, has_iv ? iv : NULL, \
+                ct_expected, ct_len, key, keyBits, pt_computed); \
             total++; \
-            if (memcmp(ct_computed, ct_expected, ct_len) == 0) { \
+            if (encrypt_result == KCMVP_SUCCESS && \
+                decrypt_result == KCMVP_SUCCESS && \
+                memcmp(ct_computed, ct_expected, ct_len) == 0 && \
+                memcmp(pt_computed, pt, pt_len) == 0) { \
                 passed++; \
             } else { \
                 failed++; \

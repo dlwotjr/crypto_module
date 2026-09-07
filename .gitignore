@@ -1,9 +1,24 @@
 # Build artifacts
 build/
 
-# Claude Code
+# Generated submission packages
+submission/
+submission.zip
+
+# LaTeX intermediate files
+docs/*.aux
+docs/*.fdb_latexmk
+docs/*.fls
+docs/*.log
+docs/*.out
+docs/*.synctex.gz
+docs/*.toc
+
+# Local agent configuration
 CLAUDE.md
 .claude/
+.codex/
+.agents/
 
 # Windows metadata files
 *.Identifier

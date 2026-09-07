@@ -1,356 +1,475 @@
-
-#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
+
+#define KCMVP_INTERNAL_ARIA_TYPES
 #include "KCMVP_Crypto.h"
-#include "aria.h"
-#include "sha3.h"
 #include "KISA_HMAC_SHA3.h"
+#include "aria.h"
+#include "ecc.h"
+#include "entropy.h"
+#include "hash_drbg.h"
+#include "integrity.h"
+#include "module_state.h"
+#include "mlkem.h"
+#include "selftest.h"
+#include "sha3.h"
 
 #define EXPORT __attribute__((visibility("default")))
-//#include "integrityTest.h"
 
-IS_ALG_TESTED algTestedFlag;
-int gCryptoState = KCMVP_CM_LOAD;
-int gVar;
+static IS_ALG_TESTED algTestedFlag;
+static HASH_DRBG_CTX module_drbg;
 
-void _Init() {
-	algTestedFlag.isBlockCipherTested = NOT_INIT;
-	algTestedFlag.isHashTested = NOT_INIT;
-	algTestedFlag.isMACTested = NOT_INIT;
-	algTestedFlag.isDRBGTested = NOT_INIT;
+int kcmvp_internal_randombytes(uint8_t *output, size_t output_len)
+{
+    return hash_drbg_generate(&module_drbg, output, output_len) ==
+        KCMVP_SUCCESS ? 0 : -1;
 }
 
-// Internal function: returns the current cryptographic module state
-int _getState() {
-	return gCryptoState;
+static void secure_zero(void *ptr, size_t len)
+{
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+
+    while (len-- > 0)
+        *p++ = 0;
 }
 
-// Internal function: updates the module state based on the given event
-// Only transitions defined in the finite state model are permitted
-void _changeState(int newState) {
-
-	switch (gCryptoState) {
-	case KCMVP_CM_LOAD:
-		// Codes
-		break;
-	case KCMVP_CM_EXECUTION:
-		// Codes;
-		break;
-	case KCMVP_CM_PRE_SELFTEST:
-		// Codes
-		break;
-	case KCMVP_CM_COND_SELFTEST:
-		// Codes
-		break;
-	default:
-		break;
-	}
+static void reset_module_data(void)
+{
+    secure_zero(&algTestedFlag, sizeof(algTestedFlag));
+    hash_drbg_uninstantiate(&module_drbg);
 }
 
-// Pre-selftest: software integrity check for the cryptographic module
-int _preSelfTest() {
-	int ret = SUCCESS;
-
-	// Codes...
-	// Software integrity test for the cryptographic module
-	//ret = integrityTest();
-
-	return ret;
+static int pre_self_test(void)
+{
+    return integrity_verify();
 }
 
-// Runs the KAT self-test for each algorithm loaded in the cryptographic module
-int _AlgKATSelfTest() {
-	int ret = SUCCESS;
+static int finish_service(int result)
+{
+    int transition_result = module_complete_service();
 
-	/* ---- SHA3-256 KAT: hash of empty string ---- */
-	/* Expected: a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a */
-	static const uint8_t sha3_256_empty_exp[32] = {
-		0xa7,0xff,0xc6,0xf8,0xbf,0x1e,0xd7,0x66,
-		0x51,0xc1,0x47,0x56,0xa0,0x61,0xd6,0x62,
-		0xf5,0x80,0xff,0x4d,0xe4,0x3b,0x49,0xfa,
-		0x82,0xd8,0x0a,0x4b,0x80,0xf8,0x43,0x4a
-	};
-	uint8_t sha3_out[64];
-	if (sha3_hash(sha3_out, 32, NULL, 0, 256, SHA3_SHAKE_NONE) != 0 ||
-	    memcmp(sha3_out, sha3_256_empty_exp, 32) != 0) {
-		fprintf(stderr, "SHA3-256 KAT failed!\n");
-		return FAIL;
-	}
-
-	/* SHA3-256 KAT: "abc" */
-	/* Expected: 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532 */
-	static const uint8_t sha3_256_abc_exp[32] = {
-		0x3a,0x98,0x5d,0xa7,0x4f,0xe2,0x25,0xb2,
-		0x04,0x5c,0x17,0x2d,0x6b,0xd3,0x90,0xbd,
-		0x85,0x5f,0x08,0x6e,0x3e,0x9d,0x52,0x5b,
-		0x46,0xbf,0xe2,0x45,0x11,0x43,0x15,0x32
-	};
-	static const uint8_t abc[3] = { 0x61, 0x62, 0x63 };
-	if (sha3_hash(sha3_out, 32, (uint8_t *)abc, 3, 256, SHA3_SHAKE_NONE) != 0 ||
-	    memcmp(sha3_out, sha3_256_abc_exp, 32) != 0) {
-		fprintf(stderr, "SHA3-256 KAT (abc) failed!\n");
-		return FAIL;
-	}
-	algTestedFlag.isHashTested = SUCCESS;
-
-	/* ---- HMAC-SHA3-224 KAT: Count=1 from HMAC_SHA3.rsp ---- */
-	/* Key  = 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b (20 bytes)  */
-	/* Msg  = "Hi There" (8 bytes)                                    */
-	/* Mac  = 3b16546bbc7be2706a031dcafd56373d9884367641d8c59af3c860f7 */
-	static const uint8_t hmac_key[20] = {
-		0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,
-		0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,
-		0x0b,0x0b,0x0b,0x0b
-	};
-	static const uint8_t hmac_msg[8] = {
-		0x48,0x69,0x20,0x54,0x68,0x65,0x72,0x65
-	};
-	static const uint8_t hmac_exp[28] = {
-		0x3b,0x16,0x54,0x6b,0xbc,0x7b,0xe2,0x70,
-		0x6a,0x03,0x1d,0xca,0xfd,0x56,0x37,0x3d,
-		0x98,0x84,0x36,0x76,0x41,0xd8,0xc5,0x9a,
-		0xf3,0xc8,0x60,0xf7
-	};
-	uint8_t hmac_out[64];
-	HMAC_SHA3(hmac_msg, 8, hmac_key, 20, hmac_out, 224);
-	if (memcmp(hmac_out, hmac_exp, 28) != 0) {
-		fprintf(stderr, "HMAC-SHA3-224 KAT failed!\n");
-		return FAIL;
-	}
-	algTestedFlag.isMACTested = SUCCESS;
-
-	return ret;
+    if (transition_result != KCMVP_SUCCESS)
+        return transition_result;
+    return result;
 }
 
-// External API: returns the current cryptographic module state
-EXPORT int KCMVP_GetState() {
+static int authorize_algorithm(unsigned char kat_passed)
+{
+    int result = module_authorize_service();
 
-	return _getState();
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (!kat_passed)
+        return finish_service(KCMVP_ERROR_SELF_TEST);
+    return KCMVP_SUCCESS;
 }
 
-// External API: runs the pre-selftest (software integrity check)
-EXPORT int KCMVP_PreSelfTest() {
-	int ret = SUCCESS;
-
-	ret = _preSelfTest();
-
-	return ret;
+EXPORT int KCMVP_GetState(void)
+{
+    return module_state_get();
 }
 
-// External API: runs the algorithm KAT self-test
-EXPORT int KCMVP_AlgKATSelfTest() {
-	int ret = SUCCESS;
+EXPORT int KCMVP_GetStatus(KCMVP_MODULE_STATUS *status)
+{
+    int state;
 
-	ret = _AlgKATSelfTest();
+    if (status == NULL)
+        return KCMVP_ERROR_INVALID_PARAM;
 
-	return ret;
+    state = module_state_get();
+    status->state = (KCMVP_MODULE_STATE)state;
+    status->initialized = (state != KCMVP_CM_LOAD && state != KCMVP_CM_EXIT);
+    status->operational = (state == KCMVP_CM_NORMAL);
+    return KCMVP_SUCCESS;
 }
 
-// Cryptographic module initialization API
-EXPORT int KCMVP_Initialize() {
-
-	int ret = 0;
-
-	printf("KCMVP_Initialize()\n");
-
-	_Init();										// Initialize KAT test flags
-
-	gCryptoState = KCMVP_CM_LOAD;					// Module load state initialization
-	gCryptoState = KCMVP_CM_PRE_SELFTEST;
-	ret = _preSelfTest();                           // Run pre-selftest (integrity check)
-	if (ret != SUCCESS) {
-		fprintf(stderr, "Preselftest failed!\n");
-		gCryptoState = KCMVP_CM_CRITICAL_ERROR;
-		goto END;
-	}
-	fprintf(stderr, "Preselftest succeeded!\n");
-	ret = _AlgKATSelfTest();                        // Run core self-test (algorithm KAT)
-	if (ret != SUCCESS) {
-		gCryptoState = KCMVP_CM_CRITICAL_ERROR;
-		goto END;
-	}
-	gCryptoState = KCMVP_CM_NORMAL;					// Transition to KCMVP normal state
-
-END:
-
-	return ret;
+EXPORT int KCMVP_PreSelfTest(void)
+{
+    if (module_state_get() != KCMVP_CM_PRE_SELFTEST)
+        return KCMVP_ERROR_INVALID_STATE;
+    return pre_self_test();
 }
 
-
-// ARIA cipher KCMVP API
-EXPORT int KCMVP_ARIA_EncKeySetup(const Byte* w0, Byte* e, int keyBits) {
-
-	int curCryptoState;
-	int ret;
-
-	// Check module state; return if not in operational state
-	curCryptoState = _getState();
-
-	// Check self-test completion
-	if (algTestedFlag.isBlockCipherTested == NOT_INIT) {
-		// Call conditional self-test function
-		// On error, transition to degraded state
-	}
-
-	// Set up encryption key
-	ret = EncKeySetup(w0, e, keyBits);
-
-	// On error, zeroize sensitive key material and return error code
-
-	return ret;
+EXPORT int KCMVP_AlgKATSelfTest(void)
+{
+    if (module_state_get() != KCMVP_CM_PRE_SELFTEST)
+        return KCMVP_ERROR_INVALID_STATE;
+    return selftest_run_startup(&algTestedFlag.startup);
 }
 
-EXPORT int KCMVP_ARIA_DecKeySetup(const Byte* w0, Byte* d, int keyBits) {
-	int curCryptoState;
-	int ret;
+EXPORT int KCMVP_Initialize(void)
+{
+    int result;
 
-	// Check module state; return if not in operational state
-	curCryptoState = _getState();
+    if (module_state_get() != KCMVP_CM_LOAD)
+        return KCMVP_ERROR_INVALID_STATE;
 
-	// Set up decryption key
-	ret = DecKeySetup(w0, d, keyBits);
+    reset_module_data();
+    result = module_state_transition(KCMVP_EVENT_BEGIN_SELFTEST);
+    if (result != KCMVP_SUCCESS)
+        return result;
 
-	// On error, zeroize sensitive key material and return error code
+    result = pre_self_test();
+    if (result == KCMVP_SUCCESS)
+        result = entropy_startup_health_test();
+    if (result == KCMVP_SUCCESS)
+        result = selftest_run_startup(&algTestedFlag.startup);
+    if (result == KCMVP_SUCCESS)
+        result = hash_drbg_instantiate(&module_drbg, NULL, 0);
 
-	return ret;
+    if (result != KCMVP_SUCCESS) {
+        reset_module_data();
+        module_state_transition(KCMVP_EVENT_FATAL_ERROR);
+        return KCMVP_ERROR_SELF_TEST;
+    }
+
+    return module_state_transition(KCMVP_EVENT_SELFTEST_PASSED);
 }
 
-EXPORT void KCMVP_ARIA_Crypt(int dir, int ARIA_MODE, const Byte* iv,
-	const Byte* p, int pSize, const Byte* key, int keyBit, Byte* c) {
+EXPORT int KCMVP_Zeroize(void)
+{
+    int state = module_state_get();
 
-	int curCryptoState;
-	int ret;
+    if (state == KCMVP_CM_EXIT)
+        return KCMVP_ERROR_INVALID_STATE;
 
-	// Check module state
-	curCryptoState = _getState();
+    reset_module_data();
+    if (state == KCMVP_CM_CRITICAL_ERROR)
+        return KCMVP_SUCCESS;
 
-	// Check self-test completion
-	if (algTestedFlag.isBlockCipherTested == NOT_INIT) {
-		// Call conditional self-test function
-		// On error, transition to degraded state
-	}
-
-	// Perform encryption/decryption by mode
-	switch (ARIA_MODE) {
-	case ARIA_ECB_MODE:
-		ARIA_ECB(dir, p, pSize, key, keyBit, c);
-		break;
-	case ARIA_CBC_MODE:
-		ARIA_CBC(dir, iv, p, pSize, key, keyBit, c);
-		break;
-	case ARIA_CTR_MODE:
-		ARIA_CTR(dir, iv, p, pSize, key, keyBit, c);
-		break;
-	default:
-		break;
-	}
-
-	// On error, zeroize sensitive key material
-
+    return module_state_transition(KCMVP_EVENT_FATAL_ERROR);
 }
 
-EXPORT void KCMVP_ARIA_Crypt_Basic(const Byte* p, int R, const Byte* e, Byte* c) {
-	int curCryptoState;
+EXPORT int KCMVP_Shutdown(void)
+{
+    int state = module_state_get();
+    int result;
 
-	// Check module state
-	curCryptoState = _getState();
+    if (state == KCMVP_CM_EXIT)
+        return KCMVP_ERROR_INVALID_STATE;
 
-	// Check self-test completion
-	if (algTestedFlag.isBlockCipherTested == NOT_INIT) {
-		// Call conditional self-test function
-		// On error, transition to degraded state
-	}
+    reset_module_data();
+    if (state != KCMVP_CM_LOAD && state != KCMVP_CM_CRITICAL_ERROR) {
+        result = module_state_transition(KCMVP_EVENT_FATAL_ERROR);
+        if (result != KCMVP_SUCCESS)
+            return result;
+    }
 
-	// Perform encryption/decryption
-	Crypt(p, R, e, c);
-
-	// On error, zeroize sensitive key material
+    return module_state_transition(KCMVP_EVENT_SHUTDOWN);
 }
 
-EXPORT void KCMVP_ARIA_printBlock(Byte* b, int size) {
+EXPORT int KCMVP_ARIA_EncKeySetup(const Byte *key, Byte *roundKeys,
+                                  int keyBits)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.aria_passed);
 
-	printBlock(b, size);
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (key == NULL || roundKeys == NULL ||
+        (keyBits != 128 && keyBits != 192 && keyBits != 256))
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
 
-}
-EXPORT void KCMVP_ARIA_printBlockOfLength(Byte* b, int len) {
-	printBlockOfLength(b, len);
-}
-
-// Test APIs
-EXPORT int plus(int a, int b) {
-	return (a + b);
-}
-
-EXPORT int minus(int a, int b) {
-	return (a - b);
+    result = EncKeySetup(key, roundKeys, keyBits);
+    return finish_service(result > 0 ? result : KCMVP_ERROR_CRYPTO);
 }
 
-EXPORT int times(int a, int b) {
-	return (a * b);
+EXPORT int KCMVP_ARIA_DecKeySetup(const Byte *key, Byte *roundKeys,
+                                  int keyBits)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.aria_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (key == NULL || roundKeys == NULL ||
+        (keyBits != 128 && keyBits != 192 && keyBits != 256))
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+
+    result = DecKeySetup(key, roundKeys, keyBits);
+    return finish_service(result > 0 ? result : KCMVP_ERROR_CRYPTO);
 }
 
-EXPORT int divide(int a, int b) {
-	return (a / b);
+EXPORT int KCMVP_ARIA_Crypt(int dir, int mode, const Byte *iv,
+                            const Byte *in, int inSize,
+                            const Byte *key, int keyBit, Byte *out)
+{
+    int mode_result;
+    int result = authorize_algorithm(algTestedFlag.startup.aria_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (in == NULL || key == NULL || out == NULL || inSize <= 0 ||
+        (dir != ARIA_ENCRYPT && dir != ARIA_DECRYPT) ||
+        (mode < ARIA_ECB_MODE || mode > ARIA_CTR_MODE) ||
+        (mode != ARIA_ECB_MODE && iv == NULL) ||
+        (mode != ARIA_CTR_MODE && (inSize % 16) != 0) ||
+        (keyBit != 128 && keyBit != 192 && keyBit != 256))
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+
+    switch (mode) {
+    case ARIA_ECB_MODE:
+        mode_result = ARIA_ECB(dir, in, inSize, key, keyBit, out);
+        break;
+    case ARIA_CBC_MODE:
+        mode_result = ARIA_CBC(dir, iv, in, inSize, key, keyBit, out);
+        break;
+    case ARIA_CTR_MODE:
+        mode_result = ARIA_CTR(dir, iv, in, inSize, key, keyBit, out);
+        break;
+    default:
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+    }
+
+    return finish_service(mode_result == ARIA_MODE_SUCCESS ?
+                          KCMVP_SUCCESS : KCMVP_ERROR_CRYPTO);
 }
 
-EXPORT void updateGVar(int a) {
-	gVar = a;
+EXPORT int KCMVP_ARIA_Crypt_Basic(const Byte *in, int rounds,
+                                  const Byte *roundKeys, Byte *out)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.aria_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (in == NULL || roundKeys == NULL || out == NULL ||
+        (rounds != 12 && rounds != 14 && rounds != 16))
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+
+    Crypt(in, rounds, roundKeys, out);
+    return finish_service(KCMVP_SUCCESS);
 }
 
-EXPORT int getGVar() {
-	return gVar;
-}
-
-EXPORT void incGVar() {
-
-	printf("incGVar() called\n");
-	gVar += 1;
-}
-
-EXPORT void decGVar() {
-
-	printf("decGVar called\n");
-	gVar -= 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* SHA-3 KCMVP wrapper API                                              */
-/* ------------------------------------------------------------------ */
-
-/* One-shot SHA-3 hash.
- * Returns 0 on success, FAIL if the module is not in a valid state
- * or the hash KAT has not been verified yet.
- */
 EXPORT int KCMVP_SHA3_Hash(uint8_t *output, int outLen,
-                            const uint8_t *input, int inLen,
-                            int bitSize)
+                           const uint8_t *input, int inLen,
+                           int bitSize)
 {
-	if (_getState() != KCMVP_CM_NORMAL)
-		return FAIL;
+    int result = authorize_algorithm(algTestedFlag.startup.sha3_passed);
 
-	if (algTestedFlag.isHashTested != SUCCESS)
-		return FAIL;
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (output == NULL || inLen < 0 || (inLen > 0 && input == NULL))
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
 
-	return sha3_hash(output, outLen, (uint8_t *)input, inLen,
-	                 bitSize, SHA3_SHAKE_NONE);
+    result = sha3_hash(output, outLen, (uint8_t *)input, inLen,
+                       bitSize, SHA3_SHAKE_NONE);
+    return finish_service(result == 0 ? KCMVP_SUCCESS : KCMVP_ERROR_INVALID_PARAM);
 }
 
-/* HMAC-SHA3.
- * Output buffer (hmac) must be at least (bitSize/8) bytes.
- * Returns 0 on success, FAIL on state or KAT error.
- */
 EXPORT int KCMVP_HMAC_SHA3(const uint8_t *message, uint32_t mlen,
-                             const uint8_t *key,     uint32_t klen,
-                             uint8_t *hmac, int bitSize)
+                           const uint8_t *key, uint32_t klen,
+                           uint8_t *hmac, int bitSize)
 {
-	if (_getState() != KCMVP_CM_NORMAL)
-		return FAIL;
+    int result = authorize_algorithm(algTestedFlag.startup.hmac_sha3_passed);
 
-	if (algTestedFlag.isMACTested != SUCCESS)
-		return FAIL;
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (hmac == NULL || (mlen > 0 && message == NULL) ||
+        (klen > 0 && key == NULL) ||
+        (bitSize != 224 && bitSize != 256 &&
+         bitSize != 384 && bitSize != 512))
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
 
-	HMAC_SHA3(message, mlen, key, klen, hmac, bitSize);
-	return 0;
+    HMAC_SHA3(message, mlen, key, klen, hmac, bitSize);
+    return finish_service(KCMVP_SUCCESS);
 }
 
-// EOF
+EXPORT int KCMVP_RNG_Generate(uint8_t *output, uint32_t output_len)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.hash_drbg_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    result = hash_drbg_generate(&module_drbg, output, output_len);
+    return finish_service(result);
+}
+
+EXPORT int KCMVP_RNG_Reseed(void)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.hash_drbg_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    result = hash_drbg_reseed(&module_drbg, NULL, 0);
+    if (result == KCMVP_ERROR_SELF_TEST || result == KCMVP_ERROR_CRYPTO) {
+        hash_drbg_uninstantiate(&module_drbg);
+        reset_module_data();
+        module_state_transition(KCMVP_EVENT_FATAL_ERROR);
+        return result;
+    }
+    return finish_service(result);
+}
+
+EXPORT int KCMVP_RNG_Uninstantiate(void)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.hash_drbg_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    hash_drbg_uninstantiate(&module_drbg);
+    return finish_service(KCMVP_SUCCESS);
+}
+
+EXPORT int KCMVP_ECC_GenerateKeyPair(uint8_t *public_key,
+                                     uint32_t public_key_len,
+                                     uint8_t *private_key,
+                                     uint32_t private_key_len)
+{
+    unsigned int attempt;
+    int result;
+
+    if (public_key == NULL || private_key == NULL ||
+        public_key_len != KCMVP_ECC_P256_PUBLIC_KEY_SIZE ||
+        private_key_len != KCMVP_ECC_P256_PRIVATE_KEY_SIZE)
+        return KCMVP_ERROR_INVALID_PARAM;
+    if (module_state_get() == KCMVP_CM_LOAD)
+        return KCMVP_ERROR_NOT_INITIALIZED;
+    if (module_state_get() != KCMVP_CM_NORMAL)
+        return KCMVP_ERROR_INVALID_STATE;
+    if (!algTestedFlag.startup.ecc_p256_passed)
+        return KCMVP_ERROR_SELF_TEST;
+
+    for (attempt = 0; attempt < 64; attempt++) {
+        result = KCMVP_RNG_Generate(private_key, private_key_len);
+        if (result != KCMVP_SUCCESS)
+            goto fail;
+        result = ecc_p256_compute_public_key(private_key, public_key);
+        if (result == KCMVP_SUCCESS)
+            break;
+    }
+    if (attempt == 64) {
+        result = KCMVP_ERROR_CRYPTO;
+        goto fail;
+    }
+
+    result = module_state_transition(KCMVP_EVENT_BEGIN_COND_SELFTEST);
+    if (result != KCMVP_SUCCESS)
+        goto fail;
+    result = ecc_p256_pairwise_test(private_key, public_key);
+    if (result != KCMVP_SUCCESS) {
+        secure_zero(private_key, private_key_len);
+        secure_zero(public_key, public_key_len);
+        reset_module_data();
+        module_state_transition(KCMVP_EVENT_FATAL_ERROR);
+        return KCMVP_ERROR_CONDITIONAL_TEST;
+    }
+
+    result = module_state_transition(KCMVP_EVENT_COND_SELFTEST_PASSED);
+    if (result != KCMVP_SUCCESS)
+        goto fail;
+    return KCMVP_SUCCESS;
+
+fail:
+    secure_zero(private_key, private_key_len);
+    secure_zero(public_key, public_key_len);
+    return result;
+}
+
+EXPORT int KCMVP_ECC_ComputeSharedSecret(const uint8_t *private_key,
+                                         uint32_t private_key_len,
+                                         const uint8_t *peer_public_key,
+                                         uint32_t peer_public_key_len,
+                                         uint8_t *shared_secret,
+                                         uint32_t shared_secret_len)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.ecc_p256_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (private_key == NULL || peer_public_key == NULL || shared_secret == NULL ||
+        private_key_len != KCMVP_ECC_P256_PRIVATE_KEY_SIZE ||
+        peer_public_key_len != KCMVP_ECC_P256_PUBLIC_KEY_SIZE ||
+        shared_secret_len != KCMVP_ECC_P256_SHARED_SECRET_SIZE)
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+
+    result = ecc_p256_shared_secret(private_key, peer_public_key, shared_secret);
+    if (result != KCMVP_SUCCESS)
+        secure_zero(shared_secret, shared_secret_len);
+    return finish_service(result);
+}
+
+EXPORT int KCMVP_MLKEM_Keypair(uint8_t *public_key, uint32_t public_key_len,
+                               uint8_t *secret_key, uint32_t secret_key_len)
+{
+    int result;
+
+    if (public_key == NULL || secret_key == NULL ||
+        public_key_len != KCMVP_MLKEM768_PUBLIC_KEY_SIZE ||
+        secret_key_len != KCMVP_MLKEM768_SECRET_KEY_SIZE)
+        return KCMVP_ERROR_INVALID_PARAM;
+    if (module_state_get() == KCMVP_CM_LOAD)
+        return KCMVP_ERROR_NOT_INITIALIZED;
+    if (module_state_get() != KCMVP_CM_NORMAL)
+        return KCMVP_ERROR_INVALID_STATE;
+    if (!algTestedFlag.startup.mlkem768_passed)
+        return KCMVP_ERROR_SELF_TEST;
+
+    result = mlkem768_keypair(public_key, secret_key);
+    if (result != KCMVP_SUCCESS)
+        goto fail;
+    result = module_state_transition(KCMVP_EVENT_BEGIN_COND_SELFTEST);
+    if (result != KCMVP_SUCCESS)
+        goto fail;
+    result = mlkem768_pairwise_test(public_key, secret_key);
+    if (result != KCMVP_SUCCESS) {
+        secure_zero(public_key, public_key_len);
+        secure_zero(secret_key, secret_key_len);
+        reset_module_data();
+        module_state_transition(KCMVP_EVENT_FATAL_ERROR);
+        return KCMVP_ERROR_CONDITIONAL_TEST;
+    }
+    result = module_state_transition(KCMVP_EVENT_COND_SELFTEST_PASSED);
+    if (result == KCMVP_SUCCESS)
+        return KCMVP_SUCCESS;
+
+fail:
+    secure_zero(public_key, public_key_len);
+    secure_zero(secret_key, secret_key_len);
+    return result;
+}
+
+EXPORT int KCMVP_MLKEM_Encaps(uint8_t *ciphertext, uint32_t ciphertext_len,
+                              uint8_t *shared_secret,
+                              uint32_t shared_secret_len,
+                              const uint8_t *public_key,
+                              uint32_t public_key_len)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.mlkem768_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (ciphertext == NULL || shared_secret == NULL || public_key == NULL ||
+        ciphertext_len != KCMVP_MLKEM768_CIPHERTEXT_SIZE ||
+        shared_secret_len != KCMVP_MLKEM768_SHARED_SECRET_SIZE ||
+        public_key_len != KCMVP_MLKEM768_PUBLIC_KEY_SIZE)
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+
+    result = mlkem768_encaps(ciphertext, shared_secret, public_key);
+    if (result != KCMVP_SUCCESS) {
+        secure_zero(ciphertext, ciphertext_len);
+        secure_zero(shared_secret, shared_secret_len);
+    }
+    return finish_service(result);
+}
+
+EXPORT int KCMVP_MLKEM_Decaps(uint8_t *shared_secret,
+                              uint32_t shared_secret_len,
+                              const uint8_t *ciphertext,
+                              uint32_t ciphertext_len,
+                              const uint8_t *secret_key,
+                              uint32_t secret_key_len)
+{
+    int result = authorize_algorithm(algTestedFlag.startup.mlkem768_passed);
+
+    if (result != KCMVP_SUCCESS)
+        return result;
+    if (shared_secret == NULL || ciphertext == NULL || secret_key == NULL ||
+        shared_secret_len != KCMVP_MLKEM768_SHARED_SECRET_SIZE ||
+        ciphertext_len != KCMVP_MLKEM768_CIPHERTEXT_SIZE ||
+        secret_key_len != KCMVP_MLKEM768_SECRET_KEY_SIZE)
+        return finish_service(KCMVP_ERROR_INVALID_PARAM);
+
+    result = mlkem768_decaps(shared_secret, ciphertext, secret_key);
+    if (result != KCMVP_SUCCESS)
+        secure_zero(shared_secret, shared_secret_len);
+    return finish_service(result);
+}

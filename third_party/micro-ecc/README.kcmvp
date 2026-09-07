@@ -1,0 +1,6 @@
+Upstream: https://github.com/kmackay/micro-ecc
+Commit: 24c60e243580c7868f4334a1ba3123481fe1aa48
+License: BSD 2-Clause (see LICENSE.txt)
+
+This project compiles only secp256r1 support and disables compressed points.
+The vendored files are otherwise unmodified upstream sources.
